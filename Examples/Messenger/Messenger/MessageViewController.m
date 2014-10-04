@@ -68,7 +68,8 @@ static NSString *AutoCompletionCellIdentifier = @"AutoCompletionCell";
     self.bounces = YES;
     self.undoShakingEnabled = YES;
     self.keyboardPanningEnabled = YES;
-    self.inverted = YES;
+#warning Inversion breaks UIKit's gentler, automatic content offset fixes when using keyboard dismiss mode + contentInset.bottom adjustments
+    self.inverted = NO;
     
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     [self.tableView registerClass:[MessageTableViewCell class] forCellReuseIdentifier:MessengerCellIdentifier];
@@ -355,6 +356,12 @@ static NSString *AutoCompletionCellIdentifier = @"AutoCompletionCell";
     // Cells must inherit the table view's transform
     // This is very important, since the main table view may be inverted
     cell.transform = self.tableView.transform;
+    
+    if (indexPath.row % 2 == 0) {
+        cell.backgroundColor = [UIColor redColor];
+    } else {
+        cell.backgroundColor = [UIColor whiteColor];
+    }
     
     return cell;
 }

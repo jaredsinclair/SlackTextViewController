@@ -25,7 +25,7 @@
 }
 
 // Auto-Layout height constraints used for updating their constants
-@property (nonatomic, strong) NSLayoutConstraint *scrollViewHC;
+@property (nonatomic, strong) NSLayoutConstraint *scrollViewStuntDoubleHC;
 @property (nonatomic, strong) NSLayoutConstraint *textInputbarHC;
 @property (nonatomic, strong) NSLayoutConstraint *typingIndicatorViewHC;
 @property (nonatomic, strong) NSLayoutConstraint *autoCompletionViewHC;
@@ -42,6 +42,8 @@
 
 // The current keyboard status (hidden, showing, etc.)
 @property (nonatomic) SLKKeyboardStatus keyboardStatus;
+
+@property (strong, nonatomic) UIView *scrollViewStuntDouble;
 
 @end
 
@@ -103,12 +105,16 @@
     
     self.view.backgroundColor = [UIColor whiteColor];
     
+    [self.view addSubview:self.scrollViewStuntDouble];
     [self.view addSubview:self.scrollViewProxy];
     [self.view addSubview:self.autoCompletionView];
     [self.view addSubview:self.typingIndicatorView];
     [self.view addSubview:self.textInputbar];
     
     [self setupViewConstraints];
+    
+    self.scrollViewProxy.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth;
+    self.scrollViewProxy.frame = self.view.bounds;
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -188,6 +194,15 @@
         return _collectionView;
     }
     return nil;
+}
+
+- (UIView *)scrollViewStuntDouble
+{
+    if (_scrollViewStuntDouble == nil) {
+        _scrollViewStuntDouble = [[UIView alloc] initWithFrame:self.view.bounds];
+    }
+    
+    return _scrollViewStuntDouble;
 }
 
 - (UITableView *)autoCompletionView
@@ -545,7 +560,9 @@
     if (inputbarHeight != self.textInputbarHC.constant)
     {
         self.textInputbarHC.constant = inputbarHeight;
-        self.scrollViewHC.constant = [self appropriateScrollViewHeight];
+        [self setScrollViewHCConstant:[self appropriateScrollViewHeight]
+             updateBottomContentInset:YES
+           updateScrollIndicatorInset:YES];
         
         if (animated) {
             
@@ -740,6 +757,7 @@
 
 - (void)willShowOrHideKeyboard:(NSNotification *)notification
 {
+    
     // Skips if it is presented inside of a popover
     if (self.isPresentedInPopover) {
         return;
@@ -755,6 +773,17 @@
         return;
     }
     
+    // Enabling keyboard dismiss mode triggers numerous false-positive
+    // UIKeyboardWillShow notifications for every scroll update.
+    // Skip these if the user is dragging the scroll view.
+    CGRect endFrame = [notification.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    if (self.scrollViewProxy.dragging) {
+        if (endFrame.origin.y + endFrame.size.height > screenBounds.size.height && endFrame.origin.y < screenBounds.size.height) {
+            return;
+        }
+    }
+    
     NSInteger curve = [notification.userInfo[UIKeyboardAnimationCurveUserInfoKey] integerValue];
     NSTimeInterval duration = [notification.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
 
@@ -762,11 +791,13 @@
     BOOL willShow = [notification.name isEqualToString:UIKeyboardWillShowNotification];
     
     // Programatically stops scrolling before updating the view constraints (to avoid scrolling glitch)
-    [self.scrollViewProxy slk_stopScrolling];
+    //[self.scrollViewProxy slk_stopScrolling];
     
     // Updates the height constraints' constants
     self.keyboardHC.constant = [self appropriateKeyboardHeight:notification];
-    self.scrollViewHC.constant = [self appropriateScrollViewHeight];
+    [self setScrollViewHCConstant:[self appropriateScrollViewHeight]
+         updateBottomContentInset:YES
+       updateScrollIndicatorInset:YES];
     
     // Hides autocompletion mode if the keyboard is being dismissed
     if (!willShow && self.isAutoCompleting) {
@@ -821,7 +852,9 @@
     }
     
     self.keyboardHC.constant = [self appropriateKeyboardHeight:notification];
-    self.scrollViewHC.constant = [self appropriateScrollViewHeight];
+    [self setScrollViewHCConstant:[self appropriateScrollViewHeight]
+         updateBottomContentInset:NO
+       updateScrollIndicatorInset:YES];
     
     self.movingKeyboard = self.scrollViewProxy.isDragging;
     
@@ -871,7 +904,7 @@
     }
     
     self.typingIndicatorViewHC.constant = indicatorView.isVisible ?  0.0 : indicatorView.height;
-    self.scrollViewHC.constant -= self.typingIndicatorViewHC.constant;
+    self.scrollViewStuntDoubleHC.constant -= self.typingIndicatorViewHC.constant;
     
 	[self.view slk_animateLayoutIfNeededWithBounce:self.bounces
 										   options:UIViewAnimationOptionCurveEaseInOut|UIViewAnimationOptionLayoutSubviews|UIViewAnimationOptionBeginFromCurrentState
@@ -1069,7 +1102,7 @@
         viewHeight = [self maximumHeightForAutoCompletionView];
     }
     
-    CGFloat tableHeight = self.scrollViewHC.constant;
+    CGFloat tableHeight = self.scrollViewStuntDoubleHC.constant;
     
     // If the the view controller extends it layout beneath it navigation bar and/or status bar, we then reduce it from the table view height
     if (self.edgesForExtendedLayout == UIRectEdgeAll || self.edgesForExtendedLayout == UIRectEdgeTop) {
@@ -1152,7 +1185,7 @@
 
 - (void)setupViewConstraints
 {
-    NSDictionary *views = @{@"scrollView": self.scrollViewProxy,
+    NSDictionary *views = @{@"scrollView": self.scrollViewStuntDouble,
                             @"autoCompletionView": self.autoCompletionView,
                             @"typingIndicatorView": self.typingIndicatorView,
                             @"textInputbar": self.textInputbar,
@@ -1167,17 +1200,57 @@
     NSArray *bottomConstraints = [self.view slk_constraintsForAttribute:NSLayoutAttributeBottom];
     NSArray *heightConstraints = [self.view slk_constraintsForAttribute:NSLayoutAttributeHeight];
     
-    self.scrollViewHC = heightConstraints[0];
+    self.scrollViewStuntDoubleHC = heightConstraints[0];
     self.autoCompletionViewHC = heightConstraints[1];
     self.typingIndicatorViewHC = heightConstraints[2];
     self.textInputbarHC = heightConstraints[3];
     self.keyboardHC = bottomConstraints[0];
     
     self.textInputbarHC.constant = [self minimumInputbarHeight];
-    self.scrollViewHC.constant = [self appropriateScrollViewHeight];
+    [self setScrollViewHCConstant:[self appropriateScrollViewHeight]
+         updateBottomContentInset:YES
+       updateScrollIndicatorInset:YES];
     
     if (self.isEditing) {
         self.textInputbarHC.constant += kAccessoryViewHeight;
+    }
+}
+
+- (void)setScrollViewHCConstant:(CGFloat)perceivedScrollViewHeight
+       updateBottomContentInset:(BOOL)updateBottomInset
+     updateScrollIndicatorInset:(BOOL)scrollIndicatorInset {
+    
+    self.scrollViewStuntDoubleHC.constant = perceivedScrollViewHeight;
+    
+    if (updateBottomInset) {
+        UIScrollView *scrollView = self.scrollViewProxy;
+        
+        UIEdgeInsets contentInsets = scrollView.contentInset;
+        if (self.isInverted) {
+            contentInsets.top = self.view.bounds.size.height - perceivedScrollViewHeight;
+            contentInsets.bottom = [[self topLayoutGuide] length];
+        } else {
+            contentInsets.bottom = self.view.bounds.size.height - perceivedScrollViewHeight;
+            contentInsets.top = [[self topLayoutGuide] length];
+        }
+        scrollView.contentInset = contentInsets;
+    }
+    
+    if (updateBottomInset) {
+        UIScrollView *scrollView = self.scrollViewProxy;
+        UIEdgeInsets indicatorInsets = scrollView.scrollIndicatorInsets;
+        if (self.isInverted) {
+            indicatorInsets.top = self.view.bounds.size.height - perceivedScrollViewHeight;
+            indicatorInsets.bottom = [[self topLayoutGuide] length];
+        } else {
+            indicatorInsets.bottom = self.view.bounds.size.height - perceivedScrollViewHeight;
+            indicatorInsets.top = [[self topLayoutGuide] length];
+        }
+        scrollView.scrollIndicatorInsets = indicatorInsets;
+        
+        if (scrollView.dragging && self.keyboardPanningEnabled) {
+            
+        }
     }
 }
 
@@ -1308,7 +1381,7 @@
     _registeredPrefixes = nil;
     
     _singleTapGesture = nil;
-    _scrollViewHC = nil;
+    _scrollViewStuntDoubleHC = nil;
     _textInputbarHC = nil;
     _textInputbarHC = nil;
     _typingIndicatorViewHC = nil;
